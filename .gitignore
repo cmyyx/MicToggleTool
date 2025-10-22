@@ -1,0 +1,38 @@
+# 编译输出
+*.exe
+*.zip
+
+# 配置和日志文件
+*.ini
+*.log
+*.log.backup_*
+
+# 临时文件
+*.tmp
+*.temp
+~*
+
+# 发布包
+MicToggleTool_v*
+release/
+dist/
+
+# IDE 和编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# 测试输出
+test_output/
+*.test.log
+
+# 备份文件
+*.bak
+*.backup

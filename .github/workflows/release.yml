@@ -1,0 +1,257 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (例如: 1.0.2)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Get version
+      id: get_version
+      run: |
+        # 判断是手动触发还是标签触发
+        if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+          $version = "${{ github.event.inputs.version }}"
+          echo "Manual trigger with version: $version"
+        } else {
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          echo "Tag trigger with version: $version"
+        }
+        
+        echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        echo "TAG=v$version" >> $env:GITHUB_OUTPUT
+        echo "Final version: $version"
+      shell: pwsh
+      
+    - name: Update version in script
+      run: |
+        $version = "${{ steps.get_version.outputs.VERSION }}"
+        $parts = $version.Split('.')
+        $major = $parts[0]
+        $minor = $parts[1]
+        $patch = $parts[2]
+        $fullVersion = "$major.$minor.$patch.0"
+        $date = Get-Date -Format "yyyy-MM-dd"
+        $year = Get-Date -Format "yyyy"
+        
+        echo "Version: $fullVersion"
+        echo "Date: $date"
+        echo "Year: $year"
+        
+        # 读取文件内容
+        $content = Get-Content "MicToggleTool.ahk" -Raw -Encoding UTF8
+        
+        # 替换版本号占位符
+        $content = $content -replace 'VERSION_MAJOR', $major
+        $content = $content -replace 'VERSION_MINOR', $minor
+        $content = $content -replace 'VERSION_PATCH', $patch
+        $content = $content -replace 'VERSION_FULL', $fullVersion
+        $content = $content -replace 'RELEASE_DATE', $date
+        $content = $content -replace 'COPYRIGHT_YEAR', $year
+        
+        # 保存文件
+        Set-Content "MicToggleTool.ahk" -Value $content -Encoding UTF8 -NoNewline
+        
+        echo "✓ Version updated to $fullVersion"
+        echo "✓ Release date set to $date"
+        echo "✓ Copyright year set to $year"
+      shell: pwsh
+      
+    - name: Setup AutoHotkey
+      run: |
+        # 下载 AutoHotkey v2
+        Invoke-WebRequest -Uri "https://www.autohotkey.com/download/ahk-v2.zip" -OutFile "ahk.zip"
+        Expand-Archive -Path "ahk.zip" -DestinationPath "AutoHotkey"
+        
+        # 克隆 Ahk2Exe 仓库
+        git clone --depth 1 https://github.com/AutoHotkey/Ahk2Exe.git Ahk2Exe-Repo
+        
+        # 复制 Ahk2Exe 到 AutoHotkey 目录
+        New-Item -ItemType Directory -Path "AutoHotkey\Compiler" -Force
+        Copy-Item -Path "Ahk2Exe-Repo\*" -Destination "AutoHotkey\Compiler\" -Recurse -Force
+        
+        # 验证文件
+        if (Test-Path "AutoHotkey\Compiler\Ahk2Exe.ahk") {
+          echo "Ahk2Exe setup successful"
+        } else {
+          echo "Ahk2Exe setup failed"
+          exit 1
+        }
+      shell: pwsh
+      
+    - name: Compile executable
+      run: |
+        $ahk = "AutoHotkey\AutoHotkey64.exe"
+        $ahk2exe = "AutoHotkey\Compiler\Ahk2Exe.ahk"
+        
+        # 使用 AutoHotkey 运行 Ahk2Exe.ahk 进行编译
+        & $ahk $ahk2exe /in "MicToggleTool.ahk" /out "MicToggleTool.exe" /icon "icons\mic_enabled.ico"
+        
+        # 等待编译完成
+        Start-Sleep -Seconds 5
+      shell: pwsh
+      
+    - name: Verify build
+      id: verify
+      run: |
+        if (Test-Path "MicToggleTool.exe") {
+          $size = (Get-Item "MicToggleTool.exe").Length
+          $sizeMB = [math]::Round($size / 1MB, 2)
+          echo "SIZE_BYTES=$size" >> $env:GITHUB_OUTPUT
+          echo "SIZE_MB=$sizeMB" >> $env:GITHUB_OUTPUT
+          echo "Build successful! File size: $size bytes ($sizeMB MB)"
+        } else {
+          echo "Build failed! MicToggleTool.exe not found"
+          exit 1
+        }
+      shell: pwsh
+      
+    - name: Calculate SHA256
+      id: sha256
+      run: |
+        $hash = (Get-FileHash -Path "MicToggleTool.exe" -Algorithm SHA256).Hash
+        echo "SHA256=$hash" >> $env:GITHUB_OUTPUT
+        
+        # 创建 SHA256 文件
+        $sha256Content = "$hash  MicToggleTool.exe"
+        Set-Content "MicToggleTool.exe.sha256" -Value $sha256Content -Encoding ASCII -NoNewline
+        
+        echo "✓ SHA256: $hash"
+        echo "✓ SHA256 file created: MicToggleTool.exe.sha256"
+      shell: pwsh
+      
+    - name: Generate changelog
+      id: changelog
+      run: |
+        try {
+          # 获取所有标签
+          $allTags = git tag --sort=-version:refname
+          
+          if ($allTags.Count -eq 0) {
+            # 没有任何标签，这是第一次发布
+            echo "No existing tags found - First release"
+            
+            # 获取所有提交记录
+            $commits = git log --pretty=format:"- %s (%h)" --no-merges
+            
+            if ($commits) {
+              $changelog = "首次发布`n`n" + ($commits -join "`n")
+            } else {
+              $changelog = "- 首次发布"
+            }
+          }
+          elseif ($allTags.Count -eq 1) {
+            # 只有一个标签（当前要发布的），获取从初始提交到现在的所有记录
+            echo "Only one tag found - Getting all commits"
+            
+            $commits = git log --pretty=format:"- %s (%h)" --no-merges
+            
+            if ($commits) {
+              $changelog = $commits -join "`n"
+            } else {
+              $changelog = "- 首次发布"
+            }
+          }
+          else {
+            # 有多个标签，获取最新两个标签之间的提交
+            $latestTag = $allTags[0]
+            $previousTag = $allTags[1]
+            
+            echo "Generating changelog from $previousTag to $latestTag"
+            
+            # 获取两个标签之间的提交记录
+            $commits = git log "$previousTag..$latestTag" --pretty=format:"- %s (%h)" --no-merges
+            
+            if ($commits) {
+              $changelog = $commits -join "`n"
+            } else {
+              $changelog = "- 无新提交"
+            }
+          }
+        }
+        catch {
+          echo "Error generating changelog: $_"
+          $changelog = "- 首次发布"
+        }
+        
+        # 保存到文件
+        $changelog | Out-File -FilePath "CHANGELOG.txt" -Encoding UTF8 -NoNewline
+        
+        echo "✓ Changelog generated"
+        echo "Changelog:"
+        echo $changelog
+      shell: pwsh
+      
+    - name: Prepare release body
+      run: |
+        $changelog = Get-Content "CHANGELOG.txt" -Raw -Encoding UTF8
+        
+        $body = @"
+## MicToggleTool v${{ steps.get_version.outputs.VERSION }}
+
+### 📝 更新日志
+
+$changelog
+
+### 📥 下载
+
+- **Windows 64-bit**: [MicToggleTool.exe](https://github.com/cmyyx/MicToggleTool/releases/download/v${{ steps.get_version.outputs.VERSION }}/MicToggleTool.exe)
+- **SHA256 校验文件**: [MicToggleTool.exe.sha256](https://github.com/cmyyx/MicToggleTool/releases/download/v${{ steps.get_version.outputs.VERSION }}/MicToggleTool.exe.sha256)
+- **文件大小**: ${{ steps.verify.outputs.SIZE_MB }} MB (${{ steps.verify.outputs.SIZE_BYTES }} bytes)
+- **SHA256**: ``${{ steps.sha256.outputs.SHA256 }}``
+
+### ✅ 校验文件完整性
+
+``````powershell
+# Windows PowerShell
+`$hash = (Get-FileHash -Path "MicToggleTool.exe" -Algorithm SHA256).Hash
+`$expected = Get-Content "MicToggleTool.exe.sha256" | ForEach-Object { `$_.Split()[0] }
+if (`$hash -eq `$expected) { Write-Host "✓ 校验通过" -ForegroundColor Green } else { Write-Host "✗ 校验失败" -ForegroundColor Red }
+``````
+
+### 🚀 快速开始
+
+1. 下载 `MicToggleTool.exe`
+2. （可选）下载 `MicToggleTool.exe.sha256` 并校验文件完整性
+3. 双击运行，授予管理员权限
+4. 选择要控制的麦克风设备
+5. 按 F9 切换麦克风状态
+
+### 📖 完整文档
+
+查看 [README.md](https://github.com/cmyyx/MicToggleTool/blob/main/README.md) 了解详细信息。
+
+### 🐛 问题反馈
+
+如遇到问题，请在 [Issues](https://github.com/cmyyx/MicToggleTool/issues) 页面提交。
+"@
+        
+        Set-Content "RELEASE_BODY.md" -Value $body -Encoding UTF8
+      shell: pwsh
+      
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.get_version.outputs.TAG }}
+        name: v${{ steps.get_version.outputs.VERSION }}
+        body_path: RELEASE_BODY.md
+        files: |
+          MicToggleTool.exe
+          MicToggleTool.exe.sha256
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
