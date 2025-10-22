@@ -7,13 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号 (例如: 1.0.2)'
-        required: true
+        description: '版本号 (例如: 1.0.2, 留空则使用最新 tag)'
+        required: false
         type: string
 
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: write
     
     steps:
     - name: Checkout code
@@ -24,8 +26,23 @@ jobs:
       run: |
         # 判断是手动触发还是标签触发
         if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-          $version = "${{ github.event.inputs.version }}"
-          echo "Manual trigger with version: $version"
+          $inputVersion = "${{ github.event.inputs.version }}"
+          
+          if ([string]::IsNullOrWhiteSpace($inputVersion)) {
+            # 如果没有提供版本号，使用最新的 tag
+            $latestTag = git describe --tags --abbrev=0 2>$null
+            
+            if ([string]::IsNullOrWhiteSpace($latestTag)) {
+              echo "Error: No version provided and no tags found"
+              exit 1
+            }
+            
+            $version = $latestTag -replace '^v', ''
+            echo "Manual trigger without version - using latest tag: $version"
+          } else {
+            $version = $inputVersion
+            echo "Manual trigger with version: $version"
+          }
         } else {
           $version = "${{ github.ref_name }}" -replace '^v', ''
           echo "Tag trigger with version: $version"
@@ -70,38 +87,142 @@ jobs:
         echo "✓ Copyright year set to $year"
       shell: pwsh
       
-    - name: Setup AutoHotkey
+    - name: Setup AutoHotkey and Ahk2Exe
       run: |
-        # 下载 AutoHotkey v2
-        Invoke-WebRequest -Uri "https://www.autohotkey.com/download/ahk-v2.zip" -OutFile "ahk.zip"
-        Expand-Archive -Path "ahk.zip" -DestinationPath "AutoHotkey"
+        # 获取 AutoHotkey 最新版本
+        echo "Getting latest AutoHotkey release..."
+        $ahkApiUrl = "https://api.github.com/repos/AutoHotkey/AutoHotkey/releases/latest"
+        $ahkRelease = Invoke-RestMethod -Uri $ahkApiUrl -Headers @{ "User-Agent" = "Mozilla/5.0" }
+        $ahkVersion = $ahkRelease.tag_name
+        $ahkAsset = $ahkRelease.assets | Where-Object { $_.name -like "AutoHotkey_*.zip" } | Select-Object -First 1
         
-        # 克隆 Ahk2Exe 仓库
-        git clone --depth 1 https://github.com/AutoHotkey/Ahk2Exe.git Ahk2Exe-Repo
-        
-        # 复制 Ahk2Exe 到 AutoHotkey 目录
-        New-Item -ItemType Directory -Path "AutoHotkey\Compiler" -Force
-        Copy-Item -Path "Ahk2Exe-Repo\*" -Destination "AutoHotkey\Compiler\" -Recurse -Force
-        
-        # 验证文件
-        if (Test-Path "AutoHotkey\Compiler\Ahk2Exe.ahk") {
-          echo "Ahk2Exe setup successful"
+        if ($ahkAsset) {
+          echo "Latest AutoHotkey version: $ahkVersion"
+          echo "Download URL: $($ahkAsset.browser_download_url)"
+          
+          # 下载 AutoHotkey
+          Invoke-WebRequest -Uri $ahkAsset.browser_download_url -OutFile "ahk.zip" -UserAgent "Mozilla/5.0"
+          
+          echo "Extracting AutoHotkey..."
+          Expand-Archive -Path "ahk.zip" -DestinationPath "AutoHotkey" -Force
+          
+          # 验证 AutoHotkey64.exe
+          if (Test-Path "AutoHotkey\AutoHotkey64.exe") {
+            echo "✓ AutoHotkey64.exe found"
+          } else {
+            echo "✗ AutoHotkey64.exe not found"
+            exit 1
+          }
         } else {
-          echo "Ahk2Exe setup failed"
+          echo "✗ Could not find AutoHotkey release asset"
+          exit 1
+        }
+        
+        # 获取 Ahk2Exe 最新版本
+        echo "Getting latest Ahk2Exe release..."
+        $apiUrl = "https://api.github.com/repos/AutoHotkey/Ahk2Exe/releases/latest"
+        $release = Invoke-RestMethod -Uri $apiUrl -Headers @{ "User-Agent" = "Mozilla/5.0" }
+        $ahk2exeVersion = $release.tag_name
+        $ahk2exeAsset = $release.assets | Where-Object { $_.name -like "*.zip" } | Select-Object -First 1
+        
+        if ($ahk2exeAsset) {
+          echo "Latest Ahk2Exe version: $ahk2exeVersion"
+          echo "Download URL: $($ahk2exeAsset.browser_download_url)"
+          
+          # 下载 Ahk2Exe
+          Invoke-WebRequest -Uri $ahk2exeAsset.browser_download_url -OutFile "ahk2exe.zip" -UserAgent "Mozilla/5.0"
+          
+          echo "Extracting Ahk2Exe..."
+          Expand-Archive -Path "ahk2exe.zip" -DestinationPath "Compiler" -Force
+          
+          # 查找 Ahk2Exe.exe
+          $ahk2exeFile = Get-ChildItem -Path "Compiler" -Filter "Ahk2Exe.exe" -Recurse | Select-Object -First 1
+          if ($ahk2exeFile) {
+            echo "✓ Ahk2Exe.exe found at: $($ahk2exeFile.FullName)"
+            
+            # 如果不在根目录，移动到根目录
+            if ($ahk2exeFile.Directory.FullName -ne (Get-Location).Path + "\Compiler") {
+              Move-Item -Path $ahk2exeFile.FullName -Destination "Compiler\Ahk2Exe.exe" -Force
+            }
+          } else {
+            echo "✗ Ahk2Exe.exe not found in downloaded archive"
+            echo "Archive contents:"
+            Get-ChildItem "Compiler" -Recurse | Select-Object FullName
+            exit 1
+          }
+          
+          # 验证 Ahk2Exe.exe 是否存在
+          if (Test-Path "Compiler\Ahk2Exe.exe") {
+            echo "✓ Ahk2Exe.exe ready"
+          } else {
+            echo "✗ Ahk2Exe.exe not found"
+            exit 1
+          }
+        } else {
+          echo "✗ Could not find Ahk2Exe release asset"
           exit 1
         }
       shell: pwsh
       
     - name: Compile executable
       run: |
-        $ahk = "AutoHotkey\AutoHotkey64.exe"
-        $ahk2exe = "AutoHotkey\Compiler\Ahk2Exe.ahk"
+        $ahk2exe = "Compiler\Ahk2Exe.exe"
         
-        # 使用 AutoHotkey 运行 Ahk2Exe.ahk 进行编译
-        & $ahk $ahk2exe /in "MicToggleTool.ahk" /out "MicToggleTool.exe" /icon "icons\mic_enabled.ico"
+        echo "Starting compilation in silent mode..."
         
-        # 等待编译完成
-        Start-Sleep -Seconds 5
+        # 指定 base file
+        $baseFile = "AutoHotkey\AutoHotkey64.exe"
+        
+        # 构建参数列表
+        $arguments = @(
+          "/in", "MicToggleTool.ahk",
+          "/out", "MicToggleTool.exe",
+          "/icon", "icons\mic_enabled.ico",
+          "/base", $baseFile,
+          "/silent"
+        )
+        
+        echo "Running: $ahk2exe with arguments"
+        echo "Base file: $baseFile"
+        echo "Arguments: $($arguments -join ' ')"
+        
+        # 使用直接调用操作符 (&) 来执行，并捕获输出
+        try {
+          $output = & $ahk2exe $arguments 2>&1
+          $exitCode = $LASTEXITCODE
+          
+          # 显示输出
+          if ($output) {
+            echo "Ahk2Exe output:"
+            echo $output
+          }
+          
+          # 检查是否成功（通过输出判断，而不是退出码）
+          if ($output -match "Successfully compiled") {
+            echo "✓ Ahk2Exe compilation successful"
+          } elseif ($null -ne $exitCode -and $exitCode -ne 0) {
+            echo "::error::Ahk2Exe failed with exit code: $exitCode"
+            exit 1
+          }
+        }
+        catch {
+          echo "::error::An error occurred during compilation: $_"
+          exit 1
+        }
+        
+        # 等待文件系统同步
+        Start-Sleep -Seconds 2
+        
+        # 检查编译结果
+        if (Test-Path "MicToggleTool.exe") {
+          $size = (Get-Item "MicToggleTool.exe").Length
+          echo "✓ Compilation successful - Size: $size bytes"
+        } else {
+          echo "::error::Compilation failed - MicToggleTool.exe not found"
+          echo "Listing current directory:"
+          Get-ChildItem . | Select-Object Name, Length
+          exit 1
+        }
       shell: pwsh
       
     - name: Verify build
@@ -197,49 +318,42 @@ jobs:
       
     - name: Prepare release body
       run: |
+        $version = "${{ steps.get_version.outputs.VERSION }}"
+        $sizeMB = "${{ steps.verify.outputs.SIZE_MB }}"
+        $sizeBytes = "${{ steps.verify.outputs.SIZE_BYTES }}"
+        $sha256 = "${{ steps.sha256.outputs.SHA256 }}"
         $changelog = Get-Content "CHANGELOG.txt" -Raw -Encoding UTF8
         
-        $body = @"
-## MicToggleTool v${{ steps.get_version.outputs.VERSION }}
-
-### 📝 更新日志
-
-$changelog
-
-### 📥 下载
-
-- **Windows 64-bit**: [MicToggleTool.exe](https://github.com/cmyyx/MicToggleTool/releases/download/v${{ steps.get_version.outputs.VERSION }}/MicToggleTool.exe)
-- **SHA256 校验文件**: [MicToggleTool.exe.sha256](https://github.com/cmyyx/MicToggleTool/releases/download/v${{ steps.get_version.outputs.VERSION }}/MicToggleTool.exe.sha256)
-- **文件大小**: ${{ steps.verify.outputs.SIZE_MB }} MB (${{ steps.verify.outputs.SIZE_BYTES }} bytes)
-- **SHA256**: ``${{ steps.sha256.outputs.SHA256 }}``
-
-### ✅ 校验文件完整性
-
-``````powershell
-# Windows PowerShell
-`$hash = (Get-FileHash -Path "MicToggleTool.exe" -Algorithm SHA256).Hash
-`$expected = Get-Content "MicToggleTool.exe.sha256" | ForEach-Object { `$_.Split()[0] }
-if (`$hash -eq `$expected) { Write-Host "✓ 校验通过" -ForegroundColor Green } else { Write-Host "✗ 校验失败" -ForegroundColor Red }
-``````
-
-### 🚀 快速开始
-
-1. 下载 `MicToggleTool.exe`
-2. （可选）下载 `MicToggleTool.exe.sha256` 并校验文件完整性
-3. 双击运行，授予管理员权限
-4. 选择要控制的麦克风设备
-5. 按 F9 切换麦克风状态
-
-### 📖 完整文档
-
-查看 [README.md](https://github.com/cmyyx/MicToggleTool/blob/main/README.md) 了解详细信息。
-
-### 🐛 问题反馈
-
-如遇到问题，请在 [Issues](https://github.com/cmyyx/MicToggleTool/issues) 页面提交。
-"@
+        # 构建 Release Notes
+        $body = "## MicToggleTool v" + $version + "`n`n"
+        $body += "### 📝 更新日志`n`n"
+        $body += "$changelog`n`n"
+        $body += "### 📥 下载`n`n"
+        $body += "- **Windows 64-bit**: [MicToggleTool.exe](https://github.com/cmyyx/MicToggleTool/releases/download/v$version/MicToggleTool.exe)`n"
+        $body += "- **SHA256 校验文件**: [MicToggleTool.exe.sha256](https://github.com/cmyyx/MicToggleTool/releases/download/v$version/MicToggleTool.exe.sha256)`n"
+        $body += "- **文件大小**: $sizeMB MB ($sizeBytes bytes)`n"
+        $body += "- **SHA256**: ``$sha256```n`n"
+        $body += "### ✅ 校验文件完整性`n`n"
+        $body += "``````powershell`n"
+        $body += "# Windows PowerShell" + "`n"
+        $body += "`$hash = (Get-FileHash -Path 'MicToggleTool.exe' -Algorithm SHA256).Hash`n"
+        $body += "`$expected = Get-Content 'MicToggleTool.exe.sha256' | ForEach-Object { `$_.Split()[0] }`n"
+        $body += "if (`$hash -eq `$expected) { Write-Host '✓ 校验通过' -ForegroundColor Green } else { Write-Host '✗ 校验失败' -ForegroundColor Red }`n"
+        $body += "```````n`n"
+        $body += "### 🚀 快速开始`n`n"
+        $body += "1. 下载 ``MicToggleTool.exe```n"
+        $body += "2. （可选）下载 ``MicToggleTool.exe.sha256`` 并校验文件完整性`n"
+        $body += "3. 双击运行，授予管理员权限`n"
+        $body += "4. 选择要控制的麦克风设备`n"
+        $body += "5. 按 F9 切换麦克风状态`n`n"
+        $body += "### 📖 完整文档`n`n"
+        $body += "查看 [README.md](https://github.com/cmyyx/MicToggleTool/blob/main/README.md) 了解详细信息。`n`n"
+        $body += "### 🐛 问题反馈`n`n"
+        $body += "如遇到问题，请在 [Issues](https://github.com/cmyyx/MicToggleTool/issues) 页面提交。`n"
         
-        Set-Content "RELEASE_BODY.md" -Value $body -Encoding UTF8
+        Set-Content "RELEASE_BODY.md" -Value $body -Encoding UTF8 -NoNewline
+        
+        echo "✓ Release body prepared"
       shell: pwsh
       
     - name: Create Release
