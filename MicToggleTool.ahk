@@ -1538,11 +1538,6 @@ class TrayManager {
         try {
             LogInfo("检查更新...")
             
-            ; 显示检查中提示
-            if (parentGui) {
-                parentGui.Opt("+Disabled")
-            }
-            
             ; 获取最新版本信息
             apiUrl := "https://api.github.com/repos/" . AppVersion.githubRepo . "/releases/latest"
             
@@ -1627,16 +1622,6 @@ class TrayManager {
         } catch as err {
             LogError("检查更新失败: " . err.Message)
             MsgBox("检查更新失败: " . err.Message . "`n`n请检查网络连接或稍后重试。", "错误", "Icon!")
-        } finally {
-            if (parentGui) {
-                parentGui.Opt("-Disabled")
-                ; 恢复窗口焦点，防止被最小化
-                try {
-                    parentGui.Show()
-                } catch {
-                    ; 忽略错误
-                }
-            }
         }
     }
     
