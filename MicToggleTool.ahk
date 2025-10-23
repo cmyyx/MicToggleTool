@@ -2043,6 +2043,41 @@ class OverlayManager {
     }
     
     /**
+     * 确保悬浮窗保持置顶状态
+     * 用于定时检查并恢复可能因系统事件（休眠/唤醒等）而失去的置顶状态
+     */
+    static EnsureAlwaysOnTop() {
+        try {
+            ; 只在悬浮窗存在且可见时检查
+            if (this.overlayGui = "" || !AppState.overlayVisible) {
+                return
+            }
+            
+            ; 检查窗口是否存在
+            if !WinExist("ahk_id " . this.overlayGui.Hwnd) {
+                return
+            }
+            
+            ; 重新应用 AlwaysOnTop 属性
+            ; 这会确保窗口保持在最顶层，即使系统事件导致其失去置顶状态
+            try {
+                WinSetAlwaysOnTop(1, "ahk_id " . this.overlayGui.Hwnd)
+            } catch {
+                ; 如果失败，尝试重新创建窗口的置顶属性
+                try {
+                    this.overlayGui.Opt("+AlwaysOnTop")
+                } catch {
+                    ; 忽略错误
+                }
+            }
+            
+        } catch as err {
+            ; 静默处理错误，避免日志过多
+            ; LogError("确保悬浮窗置顶失败: " . err.Message)
+        }
+    }
+    
+    /**
      * 销毁悬浮窗
      */
     static DestroyOverlay() {
@@ -3249,6 +3284,10 @@ class AppController {
             ; 步骤 8: 启动设备监控定时器
             LogInfo("步骤 8: 启动设备可用性监控")
             SetTimer(() => this.CheckDeviceAvailability(), 5000)  ; 每5秒检查一次
+            
+            ; 步骤 9: 启动悬浮窗置顶状态监控（防止系统事件导致失去置顶）
+            LogInfo("步骤 9: 启动悬浮窗置顶状态监控")
+            SetTimer(() => OverlayManager.EnsureAlwaysOnTop(), 5000)  ; 每5秒检查一次
             
             ; 标记为已初始化
             this.isInitialized := true
