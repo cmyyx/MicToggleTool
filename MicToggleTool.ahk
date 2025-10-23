@@ -137,18 +137,20 @@ class ResourceManager {
 ; ============================================================================
 
 ; 应用程序版本信息
-; 注意：VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH, RELEASE_DATE, COPYRIGHT_YEAR 
+; 注意：VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH, RELEASE_DATE, COPYRIGHT_YEAR, BUILD_TIME, BUILD_NUMBER
 ; 这些值会在编译时由 GitHub Actions 自动替换
 global AppVersion := {
     major: VERSION_MAJOR,
     minor: VERSION_MINOR,
     patch: VERSION_PATCH,
-    build: 0,
-    fullVersion: "VERSION_MAJOR.VERSION_MINOR.VERSION_PATCH.0",
+    fullVersion: "VERSION_FULL",
     releaseDate: "RELEASE_DATE",
+    buildTime: "BUILD_TIME",
+    buildNumber: "BUILD_NUMBER",
     copyrightYear: "COPYRIGHT_YEAR",
     name: "麦克风快捷控制工具",
-    nameEn: "Microphone Toggle Tool"
+    nameEn: "Microphone Toggle Tool",
+    githubRepo: "cmyyx/MicToggleTool"
 }
 
 global AppState := {
@@ -1481,55 +1483,40 @@ class TrayManager {
             LogInfo("用户从托盘菜单点击关于")
             
             ; 创建关于对话框
-            aboutGui := Gui("+AlwaysOnTop", "关于 " . AppVersion.name)
+            aboutGui := Gui("", "关于 " . AppVersion.name)
             aboutGui.SetFont("s10", "Microsoft YaHei")
             
             ; 添加标题
             aboutGui.SetFont("s14 bold")
-            aboutGui.Add("Text", "w400 Center", AppVersion.name)
-            aboutGui.SetFont("s9")
-            aboutGui.Add("Text", "w400 Center", AppVersion.nameEn)
+            aboutGui.Add("Text", "w350 Center", AppVersion.name)
             
             ; 添加版本信息
             aboutGui.SetFont("s10")
-            aboutGui.Add("Text", "w400 y+20", "版本: " . AppVersion.fullVersion)
-            aboutGui.Add("Text", "w400", "发布日期: " . AppVersion.releaseDate)
+            aboutGui.Add("Text", "w350 y+20", "版本: " . AppVersion.fullVersion)
+            aboutGui.Add("Text", "w350", "发布日期: " . AppVersion.releaseDate)
+            
+            ; 添加构建信息
+            aboutGui.SetFont("s9")
+            aboutGui.Add("Text", "w350 y+10", "构建时间: " . AppVersion.buildTime . " UTC")
+            aboutGui.Add("Text", "w350", "构建编号: #" . AppVersion.buildNumber)
             
             ; 添加描述
-            aboutGui.Add("Text", "w400 y+15", "一个轻量级的 Windows 系统托盘应用程序，")
-            aboutGui.Add("Text", "w400", "允许您通过全局快捷键或托盘图标")
-            aboutGui.Add("Text", "w400", "快速切换麦克风的启用/禁用状态。")
-            
-            ; 添加功能特性
-            aboutGui.Add("Text", "w400 y+15", "功能特性：")
-            aboutGui.SetFont("s9")
-            aboutGui.Add("Text", "w400", "• 全局快捷键控制（默认 F9）")
-            aboutGui.Add("Text", "w400", "• 系统托盘图标和菜单")
-            aboutGui.Add("Text", "w400", "• 悬浮窗提示")
-            aboutGui.Add("Text", "w400", "• 设备选择和管理")
-            aboutGui.Add("Text", "w400", "• 开机自动启动")
-            aboutGui.Add("Text", "w400", "• 单文件便携版")
-            
-            ; 添加技术信息
             aboutGui.SetFont("s10")
-            aboutGui.Add("Text", "w400 y+15", "技术信息：")
-            aboutGui.SetFont("s9")
-            aboutGui.Add("Text", "w400", "• AutoHotkey v2.0")
-            aboutGui.Add("Text", "w400", "• 需要管理员权限")
-            aboutGui.Add("Text", "w400", "• 支持 Windows 7/8/10/11")
+            aboutGui.Add("Text", "w350 y+15", "轻量级 Windows 麦克风快捷控制工具")
             
             ; 添加 GitHub 链接
-            aboutGui.SetFont("s10")
-            aboutGui.Add("Text", "w400 y+15", "GitHub 项目:")
-            githubLink := aboutGui.Add("Link", "w400", '<a href="https://github.com/cmyyx/MicToggleTool">https://github.com/cmyyx/MicToggleTool</a>')
+            aboutGui.Add("Text", "w350 y+15", "GitHub 项目:")
+            githubLink := aboutGui.Add("Link", "w350", '<a href="https://github.com/' . AppVersion.githubRepo . '">https://github.com/' . AppVersion.githubRepo . '</a>')
             
-            ; 添加版权信息
-            aboutGui.SetFont("s9")
-            aboutGui.Add("Text", "w400 y+15 Center", "Copyright © " . AppVersion.copyrightYear)
+            ; 添加按钮区域
+            aboutGui.Add("Text", "w350 y+15", "")
             
-            ; 添加关闭按钮
-            aboutGui.Add("Text", "w400 y+10", "")
-            btnClose := aboutGui.Add("Button", "w100 h30", "关闭")
+            ; 检查更新按钮
+            btnCheckUpdate := aboutGui.Add("Button", "x75 w100 h30", "检查更新")
+            btnCheckUpdate.OnEvent("Click", (*) => this.CheckForUpdates(aboutGui))
+            
+            ; 关闭按钮
+            btnClose := aboutGui.Add("Button", "x+10 w100 h30", "关闭")
             btnClose.OnEvent("Click", (*) => aboutGui.Destroy())
             
             ; 绑定窗口关闭事件
@@ -1542,6 +1529,146 @@ class TrayManager {
             LogError("显示关于对话框失败: " . err.Message)
             MsgBox("显示关于对话框失败: " . err.Message, "错误", "Icon!")
         }
+    }
+    
+    /**
+     * 检查更新
+     */
+    static CheckForUpdates(parentGui := "") {
+        try {
+            LogInfo("检查更新...")
+            
+            ; 显示检查中提示
+            if (parentGui) {
+                parentGui.Opt("+Disabled")
+            }
+            
+            ; 获取最新版本信息
+            apiUrl := "https://api.github.com/repos/" . AppVersion.githubRepo . "/releases/latest"
+            
+            ; 使用 ComObject 发送 HTTP 请求
+            http := ComObject("WinHttp.WinHttpRequest.5.1")
+            http.Open("GET", apiUrl, false)
+            http.SetRequestHeader("User-Agent", "MicToggleTool")
+            http.Send()
+            
+            if (http.Status != 200) {
+                throw Error("无法连接到 GitHub API")
+            }
+            
+            ; 解析 JSON 响应
+            response := http.ResponseText
+            
+            ; 提取版本号和构建编号
+            latestVersion := ""
+            latestBuildNumber := ""
+            
+            if (RegExMatch(response, '"tag_name"\s*:\s*"v?([^"]+)"', &versionMatch)) {
+                latestVersion := versionMatch[1]
+            }
+            
+            ; 从 body 中提取构建编号
+            ; JSON 中的 body 包含转义的换行符和星号，需要匹配 \*\*构建编号\*\*: #数字
+            if (RegExMatch(response, '构建编号[*\s]*:\s*#(\d+)', &buildMatch)) {
+                latestBuildNumber := buildMatch[1]
+            }
+            
+            if (latestVersion = "") {
+                throw Error("无法解析版本信息")
+            }
+            
+            currentVersion := AppVersion.fullVersion
+            currentBuildNumber := AppVersion.buildNumber
+            
+            LogInfo("当前版本: " . currentVersion . " (构建 #" . currentBuildNumber . ")")
+            LogInfo("最新版本: " . latestVersion . " (构建 #" . latestBuildNumber . ")")
+            
+            ; 先比较版本号，再比较构建编号
+            versionCompare := this.CompareVersions(currentVersion, latestVersion)
+            hasUpdate := false
+            updateMessage := ""
+            
+            if (versionCompare < 0) {
+                ; 版本号更新
+                hasUpdate := true
+                updateMessage := "发现新版本 v" . latestVersion . "`n`n"
+                    . "当前版本: v" . currentVersion . " (构建 #" . currentBuildNumber . ")`n"
+                    . "最新版本: v" . latestVersion . " (构建 #" . latestBuildNumber . ")`n`n"
+                    . "是否前往下载页面？"
+            } else if (versionCompare = 0 && latestBuildNumber != "" && currentBuildNumber != "") {
+                ; 版本号相同，比较构建编号
+                if (Integer(currentBuildNumber) < Integer(latestBuildNumber)) {
+                    hasUpdate := true
+                    updateMessage := "发现同版本的新构建 v" . latestVersion . "`n`n"
+                        . "当前构建: #" . currentBuildNumber . "`n"
+                        . "最新构建: #" . latestBuildNumber . "`n`n"
+                        . "该版本已更新，建议重新下载。`n`n"
+                        . "是否前往下载页面？"
+                }
+            }
+            
+            if (hasUpdate) {
+                result := MsgBox(updateMessage, "发现更新", "YesNo Icon!")
+                
+                if (result = "Yes") {
+                    Run("https://github.com/" . AppVersion.githubRepo . "/releases/latest")
+                }
+            } else {
+                ; 已是最新版本
+                MsgBox(
+                    "您已经在使用最新版本`n`n"
+                    . "版本: v" . currentVersion . "`n"
+                    . "构建: #" . currentBuildNumber,
+                    "检查更新",
+                    "Iconi"
+                )
+            }
+            
+        } catch as err {
+            LogError("检查更新失败: " . err.Message)
+            MsgBox("检查更新失败: " . err.Message . "`n`n请检查网络连接或稍后重试。", "错误", "Icon!")
+        } finally {
+            if (parentGui) {
+                parentGui.Opt("-Disabled")
+                ; 恢复窗口焦点，防止被最小化
+                try {
+                    parentGui.Show()
+                } catch {
+                    ; 忽略错误
+                }
+            }
+        }
+    }
+    
+    /**
+     * 比较版本号
+     * @param {String} v1 - 版本号1
+     * @param {String} v2 - 版本号2
+     * @returns {Integer} -1: v1 < v2, 0: v1 = v2, 1: v1 > v2
+     */
+    static CompareVersions(v1, v2) {
+        ; 移除 'v' 前缀
+        v1 := RegExReplace(v1, "^v", "")
+        v2 := RegExReplace(v2, "^v", "")
+        
+        ; 分割版本号
+        parts1 := StrSplit(v1, ".")
+        parts2 := StrSplit(v2, ".")
+        
+        ; 比较每个部分
+        maxLen := Max(parts1.Length, parts2.Length)
+        Loop maxLen {
+            p1 := (A_Index <= parts1.Length) ? Integer(parts1[A_Index]) : 0
+            p2 := (A_Index <= parts2.Length) ? Integer(parts2[A_Index]) : 0
+            
+            if (p1 < p2) {
+                return -1
+            } else if (p1 > p2) {
+                return 1
+            }
+        }
+        
+        return 0
     }
     
     /**
@@ -3016,6 +3143,8 @@ class AppController {
             LogInfo("应用程序: " . AppVersion.name . " (" . AppVersion.nameEn . ")")
             LogInfo("版本: " . AppVersion.fullVersion)
             LogInfo("发布日期: " . AppVersion.releaseDate)
+            LogInfo("构建时间: " . AppVersion.buildTime . " UTC")
+            LogInfo("构建编号: #" . AppVersion.buildNumber)
             LogInfo("========================================")
             
             ; 步骤 0: 检查管理员权限（根据配置决定）

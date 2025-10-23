@@ -20,6 +20,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 获取完整的 git 历史和所有 tags
       
     - name: Get version
       id: get_version
@@ -60,12 +62,18 @@ jobs:
         $major = $parts[0]
         $minor = $parts[1]
         $patch = $parts[2]
-        $fullVersion = "$major.$minor.$patch.0"
-        $date = Get-Date -Format "yyyy-MM-dd"
-        $year = Get-Date -Format "yyyy"
         
-        echo "Version: $fullVersion"
+        # 使用 UTC 时间
+        $utcNow = (Get-Date).ToUniversalTime()
+        $date = $utcNow.ToString("yyyy-MM-dd")
+        $buildTime = $utcNow.ToString("yyyy-MM-dd HH:mm:ss")
+        $buildNumber = "${{ github.run_number }}"
+        $year = $utcNow.ToString("yyyy")
+        
+        echo "Version: $version"
         echo "Date: $date"
+        echo "Build Time: $buildTime"
+        echo "Build Number: $buildNumber"
         echo "Year: $year"
         
         # 读取文件内容
@@ -75,15 +83,19 @@ jobs:
         $content = $content -replace 'VERSION_MAJOR', $major
         $content = $content -replace 'VERSION_MINOR', $minor
         $content = $content -replace 'VERSION_PATCH', $patch
-        $content = $content -replace 'VERSION_FULL', $fullVersion
+        $content = $content -replace 'VERSION_FULL', $version
         $content = $content -replace 'RELEASE_DATE', $date
+        $content = $content -replace 'BUILD_TIME', $buildTime
+        $content = $content -replace 'BUILD_NUMBER', $buildNumber
         $content = $content -replace 'COPYRIGHT_YEAR', $year
         
         # 保存文件
         Set-Content "MicToggleTool.ahk" -Value $content -Encoding UTF8 -NoNewline
         
-        echo "✓ Version updated to $fullVersion"
+        echo "✓ Version updated to $version"
         echo "✓ Release date set to $date"
+        echo "✓ Build time set to $buildTime"
+        echo "✓ Build number set to $buildNumber"
         echo "✓ Copyright year set to $year"
       shell: pwsh
       
@@ -187,40 +199,64 @@ jobs:
         echo "Arguments: $($arguments -join ' ')"
         
         # 使用直接调用操作符 (&) 来执行，并捕获输出
-        try {
-          $output = & $ahk2exe $arguments 2>&1
-          $exitCode = $LASTEXITCODE
-          
-          # 显示输出
-          if ($output) {
-            echo "Ahk2Exe output:"
-            echo $output
+        $maxRetries = 2
+        $retryCount = 0
+        $compiled = $false
+        
+        while ($retryCount -lt $maxRetries -and -not $compiled) {
+          if ($retryCount -gt 0) {
+            echo "Retry attempt $retryCount of $($maxRetries - 1)..."
+            Start-Sleep -Seconds 3
           }
           
-          # 检查是否成功（通过输出判断，而不是退出码）
-          if ($output -match "Successfully compiled") {
-            echo "✓ Ahk2Exe compilation successful"
-          } elseif ($null -ne $exitCode -and $exitCode -ne 0) {
-            echo "::error::Ahk2Exe failed with exit code: $exitCode"
-            exit 1
+          try {
+            $output = & $ahk2exe $arguments 2>&1
+            $exitCode = $LASTEXITCODE
+            
+            # 显示输出
+            if ($output) {
+              echo "Ahk2Exe output:"
+              echo $output
+            }
+            
+            # 检查是否成功（通过输出判断）
+            if ($output -match "Successfully compiled") {
+              echo "✓ Ahk2Exe reported success"
+            } elseif ($null -ne $exitCode -and $exitCode -ne 0) {
+              echo "::warning::Ahk2Exe exit code: $exitCode"
+            }
           }
-        }
-        catch {
-          echo "::error::An error occurred during compilation: $_"
-          exit 1
+          catch {
+            echo "::warning::Compilation attempt failed: $_"
+          }
+          
+          # 等待文件系统同步（增加等待时间）
+          Start-Sleep -Seconds 5
+          
+          # 检查编译结果
+          if (Test-Path "MicToggleTool.exe") {
+            $size = (Get-Item "MicToggleTool.exe").Length
+            if ($size -gt 0) {
+              echo "✓ Compilation successful - Size: $size bytes"
+              $compiled = $true
+            } else {
+              echo "::warning::MicToggleTool.exe exists but has 0 bytes"
+              Remove-Item "MicToggleTool.exe" -Force
+            }
+          } else {
+            echo "::warning::MicToggleTool.exe not found after attempt $($retryCount + 1)"
+          }
+          
+          $retryCount++
         }
         
-        # 等待文件系统同步
-        Start-Sleep -Seconds 2
-        
-        # 检查编译结果
-        if (Test-Path "MicToggleTool.exe") {
-          $size = (Get-Item "MicToggleTool.exe").Length
-          echo "✓ Compilation successful - Size: $size bytes"
-        } else {
-          echo "::error::Compilation failed - MicToggleTool.exe not found"
+        # 最终检查
+        if (-not $compiled) {
+          echo "::error::Compilation failed after $maxRetries attempts"
           echo "Listing current directory:"
           Get-ChildItem . | Select-Object Name, Length
+          echo "Checking Compiler directory:"
+          Get-ChildItem "Compiler" | Select-Object Name, Length
           exit 1
         }
       shell: pwsh
@@ -258,10 +294,14 @@ jobs:
       id: changelog
       run: |
         try {
-          # 获取所有标签
-          $allTags = git tag --sort=-version:refname
+          # 获取所有标签（确保返回数组）
+          $allTagsRaw = git tag --sort=-version:refname
+          $allTags = @($allTagsRaw)  # 强制转换为数组
           
-          if ($allTags.Count -eq 0) {
+          echo "Total tags found: $($allTags.Count)"
+          echo "Tags: $($allTags -join ', ')"
+          
+          if ($allTags.Count -eq 0 -or [string]::IsNullOrWhiteSpace($allTags[0])) {
             # 没有任何标签，这是第一次发布
             echo "No existing tags found - First release"
             
@@ -287,17 +327,33 @@ jobs:
             }
           }
           else {
-            # 有多个标签，获取最新两个标签之间的提交
+            # 有多个标签，获取两个标签之间的提交
             $latestTag = $allTags[0]
             $previousTag = $allTags[1]
             
-            echo "Generating changelog from $previousTag to $latestTag"
+            echo "Latest tag: $latestTag"
+            echo "Previous tag: $previousTag"
+            echo "Generating changelog from $previousTag to HEAD"
             
-            # 获取两个标签之间的提交记录
-            $commits = git log "$previousTag..$latestTag" --pretty=format:"- %s (%h)" --no-merges
+            # 获取上一个标签指向的提交
+            $previousCommit = git rev-parse "$previousTag^{commit}"
+            
+            # 获取当前 HEAD 的提交
+            $currentCommit = git rev-parse HEAD
+            
+            echo "Previous commit: $previousCommit"
+            echo "Current commit: $currentCommit"
+            
+            # 使用 git log 获取两个提交之间的记录（不包括 previousCommit 本身）
+            $commits = git log "$previousCommit..HEAD" --pretty=format:"- %s (%h)" --no-merges
             
             if ($commits) {
-              $changelog = $commits -join "`n"
+              # 如果是数组，join；如果是单个字符串，直接使用
+              if ($commits -is [array]) {
+                $changelog = $commits -join "`n"
+              } else {
+                $changelog = $commits
+              }
             } else {
               $changelog = "- 无新提交"
             }
@@ -319,6 +375,7 @@ jobs:
     - name: Prepare release body
       run: |
         $version = "${{ steps.get_version.outputs.VERSION }}"
+        $buildNumber = "${{ github.run_number }}"
         $sizeMB = "${{ steps.verify.outputs.SIZE_MB }}"
         $sizeBytes = "${{ steps.verify.outputs.SIZE_BYTES }}"
         $sha256 = "${{ steps.sha256.outputs.SHA256 }}"
@@ -326,6 +383,11 @@ jobs:
         
         # 构建 Release Notes
         $body = "## MicToggleTool v" + $version + "`n`n"
+        
+        # 添加版本下载量徽章和构建信息
+        $body += "![Downloads](https://img.shields.io/github/downloads/cmyyx/MicToggleTool/v$version/total?label=downloads&color=blue)`n`n"
+        $body += "**构建编号**: #$buildNumber`n`n"
+        
         $body += "### 📝 更新日志`n`n"
         $body += "$changelog`n`n"
         $body += "### 📥 下载`n`n"

@@ -6,8 +6,8 @@
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)
 ![License](https://img.shields.io/github/license/cmyyx/MicToggleTool)
 ![AutoHotkey](https://img.shields.io/badge/AutoHotkey-v2.0-red.svg)
-![Size](https://img.shields.io/github/repo-size/cmyyx/MicToggleTool)
-![Downloads](https://img.shields.io/github/downloads/cmyyx/MicToggleTool/total)
+![Downloads](https://img.shields.io/github/downloads/cmyyx/MicToggleTool/total?label=total%20downloads)
+![Latest Downloads](https://img.shields.io/github/downloads/cmyyx/MicToggleTool/latest/total?label=latest%20downloads)
 ![Stars](https://img.shields.io/github/stars/cmyyx/MicToggleTool)
 ![Issues](https://img.shields.io/github/issues/cmyyx/MicToggleTool)
 
