@@ -177,6 +177,8 @@ class ConfigManager {
         "General_AutoStart", "0",
         "General_TargetDevice", "",
         "General_AdminCheck", "prompt",
+        "General_AutoCheckUpdate", "1",
+        "General_AutoCheckUpdateSilent", "1",
         "Overlay_Enabled", "1",
         "Overlay_Position", "TopRight",
         "Overlay_OffsetX", "100",
@@ -1657,6 +1659,115 @@ class TrayManager {
     }
     
     /**
+     * 自动检查更新（后台静默检查）
+     */
+    static AutoCheckForUpdates() {
+        try {
+            ; 检查是否启用自动检查
+            if (ConfigManager.GetConfig(AppController.config, "General_AutoCheckUpdate", "1") != "1") {
+                return
+            }
+            
+            isSilent := ConfigManager.GetConfig(AppController.config, "General_AutoCheckUpdateSilent", "1") = "1"
+            
+            LogInfo("自动检查更新..." . (isSilent ? " (静默模式)" : ""))
+            
+            ; 获取最新版本信息
+            apiUrl := "https://api.github.com/repos/" . AppVersion.githubRepo . "/releases/latest"
+            
+            ; 使用 ComObject 发送 HTTP 请求
+            http := ComObject("WinHttp.WinHttpRequest.5.1")
+            http.Open("GET", apiUrl, false)
+            http.SetRequestHeader("User-Agent", "MicToggleTool")
+            http.Send()
+            
+            if (http.Status != 200) {
+                if (!isSilent) {
+                    throw Error("无法连接到 GitHub API")
+                }
+                return
+            }
+            
+            ; 解析 JSON 响应
+            response := http.ResponseText
+            
+            ; 提取版本号和构建编号
+            latestVersion := ""
+            latestBuildNumber := ""
+            
+            if (RegExMatch(response, '"tag_name"\s*:\s*"v?([^"]+)"', &versionMatch)) {
+                latestVersion := versionMatch[1]
+            }
+            
+            if (RegExMatch(response, '构建编号[*\s]*:\s*#(\d+)', &buildMatch)) {
+                latestBuildNumber := buildMatch[1]
+            }
+            
+            if (latestVersion = "") {
+                if (!isSilent) {
+                    throw Error("无法解析版本信息")
+                }
+                return
+            }
+            
+            currentVersion := AppVersion.fullVersion
+            currentBuildNumber := AppVersion.buildNumber
+            
+            ; 比较版本号
+            versionCompare := this.CompareVersions(currentVersion, latestVersion)
+            hasUpdate := false
+            
+            if (versionCompare < 0) {
+                hasUpdate := true
+            } else if (versionCompare = 0 && latestBuildNumber != "" && currentBuildNumber != "") {
+                if (Integer(currentBuildNumber) < Integer(latestBuildNumber)) {
+                    hasUpdate := true
+                }
+            }
+            
+            if (hasUpdate) {
+                LogInfo("自动检查发现新版本: v" . latestVersion . " (构建 #" . latestBuildNumber . ")")
+                
+                ; 显示通知
+                result := MsgBox(
+                    "发现新版本 v" . latestVersion . "`n`n"
+                    . "当前版本: v" . currentVersion . " (构建 #" . currentBuildNumber . ")`n"
+                    . "最新版本: v" . latestVersion . " (构建 #" . latestBuildNumber . ")`n`n"
+                    . "是否前往下载页面？",
+                    AppVersion.name . " - 发现更新",
+                    "YesNo Icon!"
+                )
+                
+                if (result = "Yes") {
+                    Run("https://github.com/" . AppVersion.githubRepo . "/releases/latest")
+                }
+            } else {
+                LogInfo("自动检查：当前已是最新版本")
+            }
+            
+        } catch as err {
+            ; 记录错误日志
+            LogError("自动检查更新失败: " . err.Message)
+            
+            ; 非静默模式下显示错误弹窗
+            if (!isSilent) {
+                MsgBox(
+                    "自动检查更新失败`n`n"
+                    . "错误信息: " . err.Message . "`n`n"
+                    . "可能原因：`n"
+                    . "• 网络连接问题`n"
+                    . "• GitHub API 暂时不可用`n"
+                    . "• 防火墙阻止了连接`n`n"
+                    . "您可以稍后手动检查更新（托盘菜单 → 关于 → 检查更新）",
+                    AppVersion.name . " - 检查更新失败",
+                    "Icon! 48"
+                )
+            }
+            ; 静默模式下只记录日志，不显示弹窗
+        }
+    }
+    
+    /**
      * 处理退出菜单项点击
      */
     static OnExit() {
@@ -2783,16 +2894,30 @@ class SettingsDialog {
             this.settingsGui.Add("Text", "x240 y295 w150 cGray", "(6位16进制RGB)")
             
             ; === 其他设置 ===
-            this.settingsGui.Add("GroupBox", "x10 y360 w380 h140", "其他设置")
+            this.settingsGui.Add("GroupBox", "x10 y360 w380 h200", "其他设置")
             
             ; 开机自动启动
             this.autoStartCheckbox := this.settingsGui.Add("Checkbox", "x20 y385 w350", "开机自动启动")
             this.autoStartCheckbox.Value := (ConfigManager.GetConfig(config, "General_AutoStart", "0") = "1")
             
-            ; 管理员权限检查
-            this.settingsGui.Add("Text", "x20 y415 w100", "启动权限检查:")
+            ; 自动检查更新（默认关闭）
+            this.autoCheckUpdateCheckbox := this.settingsGui.Add("Checkbox", "x20 y410 w350", "自动检查更新（每24小时）")
+            this.autoCheckUpdateCheckbox.Value := (ConfigManager.GetConfig(config, "General_AutoCheckUpdate", "0") = "1")
+            
+            ; 静默检查更新（增加宽度，调整为多行显示）
+            this.autoCheckUpdateSilentCheckbox := this.settingsGui.Add("Checkbox", "x40 y435 w330", "静默模式（检查出错时不提示,如果与GitHub连接不稳定建议开）")
+            this.autoCheckUpdateSilentCheckbox.Value := (ConfigManager.GetConfig(config, "General_AutoCheckUpdateSilent", "1") = "1")
+            
+            ; 绑定自动检查更新的事件，控制静默模式的启用状态
+            this.autoCheckUpdateCheckbox.OnEvent("Click", (*) => this.OnAutoCheckUpdateToggle())
+            
+            ; 初始化静默模式的启用状态
+            this.autoCheckUpdateSilentCheckbox.Enabled := this.autoCheckUpdateCheckbox.Value
+            
+            ; 管理员权限检查（向下移动，给上方换行留出空间）
+            this.settingsGui.Add("Text", "x20 y485 w100", "启动权限检查:")
             currentAdminCheck := ConfigManager.GetConfig(config, "General_AdminCheck", "prompt")
-            this.adminCheckDropdown := this.settingsGui.Add("DropDownList", "x130 y412 w150", ["提醒", "跳过", "自动"])
+            this.adminCheckDropdown := this.settingsGui.Add("DropDownList", "x130 y482 w150", ["提醒", "跳过", "自动"])
             
             ; 设置当前选项
             if (currentAdminCheck = "prompt") {
@@ -2803,14 +2928,14 @@ class SettingsDialog {
                 this.adminCheckDropdown.Choose(3)
             }
             
-            ; 添加权限检查说明（多行）
-            this.settingsGui.Add("Text", "x20 y440 w360 cGray", "• 提醒：非管理员身份启动时提醒（推荐）")
-            this.settingsGui.Add("Text", "x20 y460 w360 cGray", "• 跳过：不检查权限，直接启动")
-            this.settingsGui.Add("Text", "x20 y480 w360 cGray", "• 自动：非管理员身份启动时自动提权")
+            ; 添加权限检查说明（多行，向下移动）
+            this.settingsGui.Add("Text", "x20 y510 w360 cGray", "• 提醒：非管理员身份启动时提醒（推荐）")
+            this.settingsGui.Add("Text", "x20 y530 w360 cGray", "• 跳过：不检查权限，直接启动")
+            this.settingsGui.Add("Text", "x20 y550 w360 cGray", "• 自动：非管理员身份启动时自动提权")
             
-            ; === 按钮 ===
-            btnSave := this.settingsGui.Add("Button", "x100 y515 w90 h35", "保存")
-            btnCancel := this.settingsGui.Add("Button", "x200 y515 w90 h35", "取消")
+            ; === 按钮 ===（向下移动）
+            btnSave := this.settingsGui.Add("Button", "x100 y595 w90 h35", "保存")
+            btnCancel := this.settingsGui.Add("Button", "x200 y595 w90 h35", "取消")
             
             ; 绑定按钮事件
             btnSave.OnEvent("Click", (*) => this.OnSave(config, positions))
@@ -2827,6 +2952,28 @@ class SettingsDialog {
         } catch as err {
             LogError("显示设置对话框失败: " . err.Message)
             MsgBox("显示设置对话框失败: " . err.Message, "错误", "Icon!")
+        }
+    }
+    
+    /**
+     * 处理自动检查更新复选框的切换事件
+     */
+    static OnAutoCheckUpdateToggle() {
+        try {
+            ; 获取自动检查更新的状态
+            autoCheckEnabled := this.autoCheckUpdateCheckbox.Value
+            
+            ; 根据自动检查更新的状态，启用或禁用静默模式复选框
+            this.autoCheckUpdateSilentCheckbox.Enabled := autoCheckEnabled
+            
+            ; 如果禁用自动检查更新，同时取消勾选静默模式
+            if (!autoCheckEnabled) {
+                this.autoCheckUpdateSilentCheckbox.Value := 0
+            }
+            
+            LogInfo("自动检查更新状态切换: " . (autoCheckEnabled ? "启用" : "禁用"))
+        } catch as err {
+            LogError("处理自动检查更新切换失败: " . err.Message)
         }
     }
     
@@ -2853,6 +3000,8 @@ class SettingsDialog {
             overlayColor := this.overlayColorEdit.Value
             overlayTextColor := this.overlayTextColorEdit.Value
             autoStart := this.autoStartCheckbox.Value ? "1" : "0"
+            autoCheckUpdate := this.autoCheckUpdateCheckbox.Value ? "1" : "0"
+            autoCheckUpdateSilent := this.autoCheckUpdateSilentCheckbox.Value ? "1" : "0"
             
             ; 获取管理员权限检查模式
             adminCheckIndex := this.adminCheckDropdown.Value
@@ -2880,6 +3029,8 @@ class SettingsDialog {
             ConfigManager.SaveConfig("Overlay", "BackgroundColor", overlayColor)
             ConfigManager.SaveConfig("Overlay", "TextColor", overlayTextColor)
             ConfigManager.SaveConfig("General", "AutoStart", autoStart)
+            ConfigManager.SaveConfig("General", "AutoCheckUpdate", autoCheckUpdate)
+            ConfigManager.SaveConfig("General", "AutoCheckUpdateSilent", autoCheckUpdateSilent)
             ConfigManager.SaveConfig("General", "AdminCheck", adminCheckMode)
             
             ; 更新快捷键（如果改变）
@@ -3283,11 +3434,21 @@ class AppController {
             
             ; 步骤 8: 启动设备监控定时器
             LogInfo("步骤 8: 启动设备可用性监控")
-            SetTimer(() => this.CheckDeviceAvailability(), 5000)  ; 每5秒检查一次
+            SetTimer(() => this.CheckDeviceAvailability(), 1000)  ; 每1秒检查一次
             
             ; 步骤 9: 启动悬浮窗置顶状态监控（防止系统事件导致失去置顶）
             LogInfo("步骤 9: 启动悬浮窗置顶状态监控")
             SetTimer(() => OverlayManager.EnsureAlwaysOnTop(), 5000)  ; 每5秒检查一次
+            
+            ; 步骤 10: 启动自动检查更新（如果启用）
+            if (ConfigManager.GetConfig(this.config, "General_AutoCheckUpdate", "1") = "1") {
+                LogInfo("步骤 10: 启动自动检查更新")
+                ; 延迟30秒后首次检查，然后每24小时检查一次
+                SetTimer(() => TrayManager.AutoCheckForUpdates(), -30000)  ; 30秒后首次检查
+                SetTimer(() => TrayManager.AutoCheckForUpdates(), 86400000)  ; 每24小时检查一次
+            } else {
+                LogInfo("步骤 10: 自动检查更新已禁用")
+            }
             
             ; 标记为已初始化
             this.isInitialized := true
@@ -3616,19 +3777,20 @@ class AppController {
             static lastAvailableState := ""  ; 空字符串表示未初始化
             static lastMicState := true
             static checkCount := 0
+            static unavailableLogCount := 0  ; 设备不可用时的日志计数
             
-            ; 每10次检查记录一次日志（避免日志过多）
+            ; 每300次检查记录一次日志（5分钟，避免日志过多）
             checkCount++
-            if (Mod(checkCount, 10) = 0) {
+            if (Mod(checkCount, 300) = 0) {
                 LogInfo("设备监控运行中 (检查次数: " . checkCount . ")")
             }
             
             ; 检查设备是否可用（不在这里显示警告，由状态变化时统一处理）
             isAvailable := MicrophoneController.IsMicrophoneAvailable(false)
             
-            ; 记录检查结果（调试用）
-            if (Mod(checkCount, 10) = 0) {
-                LogInfo("设备可用性检查结果: " . (isAvailable ? "可用" : "不可用") . " (设备: " . AppState.targetDeviceName . ")")
+            ; 只在状态变化或每5分钟记录一次（设备可用时）
+            if (isAvailable && Mod(checkCount, 300) = 0) {
+                LogInfo("设备可用性检查结果: 可用 (设备: " . AppState.targetDeviceName . ")")
             }
             
             ; 设置全局标记
@@ -3642,6 +3804,7 @@ class AppController {
             if (!isAvailable && lastAvailableState) {
                 ; 设备刚变为不可用
                 LogWarning("检测到设备不可用: " . AppState.targetDeviceName)
+                unavailableLogCount := 0  ; 重置计数器
                 
                 ; 更新托盘图标为灰色
                 if (IsSet(TrayManager)) {
@@ -3659,6 +3822,13 @@ class AppController {
                 }
                 
                 lastAvailableState := false
+                
+            } else if (!isAvailable && !lastAvailableState) {
+                ; 设备持续不可用，每5分钟记录一次
+                unavailableLogCount++
+                if (Mod(unavailableLogCount, 300) = 0) {
+                    LogWarning("设备持续不可用: " . AppState.targetDeviceName . " (已持续 " . (unavailableLogCount // 60) . " 分钟)")
+                }
                 
             } else if (isAvailable && lastAvailableState = false) {
                 ; 设备恢复可用
@@ -3723,6 +3893,10 @@ class AppController {
                     
                     ; 更新悬浮窗
                     if (IsSet(OverlayManager)) {
+                        ; 先更新图标状态
+                        OverlayManager.UpdateOverlayIcon(currentState)
+                        
+                        ; 然后显示或隐藏
                         if (currentState) {
                             OverlayManager.HideOverlay()
                         } else {
