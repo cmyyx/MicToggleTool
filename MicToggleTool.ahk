@@ -177,8 +177,8 @@ class ConfigManager {
         "General_AutoStart", "0",
         "General_TargetDevice", "",
         "General_AdminCheck", "prompt",
-        "General_AutoCheckUpdate", "1",
-        "General_AutoCheckUpdateSilent", "1",
+        "General_AutoCheckUpdate", "0",
+        "General_AutoCheckUpdateSilent", "0",
         "Overlay_Enabled", "1",
         "Overlay_Position", "TopRight",
         "Overlay_OffsetX", "100",
@@ -1664,11 +1664,11 @@ class TrayManager {
     static AutoCheckForUpdates() {
         try {
             ; 检查是否启用自动检查
-            if (ConfigManager.GetConfig(AppController.config, "General_AutoCheckUpdate", "1") != "1") {
+            if (ConfigManager.GetConfig(AppController.config, "General_AutoCheckUpdate", "0") != "1") {
                 return
             }
             
-            isSilent := ConfigManager.GetConfig(AppController.config, "General_AutoCheckUpdateSilent", "1") = "1"
+            isSilent := ConfigManager.GetConfig(AppController.config, "General_AutoCheckUpdateSilent", "0") = "1"
             
             LogInfo("自动检查更新..." . (isSilent ? " (静默模式)" : ""))
             
@@ -2906,7 +2906,7 @@ class SettingsDialog {
             
             ; 静默检查更新（增加宽度，调整为多行显示）
             this.autoCheckUpdateSilentCheckbox := this.settingsGui.Add("Checkbox", "x40 y435 w330", "静默模式（检查出错时不提示,如果与GitHub连接不稳定建议开）")
-            this.autoCheckUpdateSilentCheckbox.Value := (ConfigManager.GetConfig(config, "General_AutoCheckUpdateSilent", "1") = "1")
+            this.autoCheckUpdateSilentCheckbox.Value := (ConfigManager.GetConfig(config, "General_AutoCheckUpdateSilent", "0") = "1")
             
             ; 绑定自动检查更新的事件，控制静默模式的启用状态
             this.autoCheckUpdateCheckbox.OnEvent("Click", (*) => this.OnAutoCheckUpdateToggle())
@@ -3441,7 +3441,7 @@ class AppController {
             SetTimer(() => OverlayManager.EnsureAlwaysOnTop(), 5000)  ; 每5秒检查一次
             
             ; 步骤 10: 启动自动检查更新（如果启用）
-            if (ConfigManager.GetConfig(this.config, "General_AutoCheckUpdate", "1") = "1") {
+            if (ConfigManager.GetConfig(this.config, "General_AutoCheckUpdate", "0") = "1") {
                 LogInfo("步骤 10: 启动自动检查更新")
                 ; 延迟30秒后首次检查，然后每24小时检查一次
                 SetTimer(() => TrayManager.AutoCheckForUpdates(), -30000)  ; 30秒后首次检查
